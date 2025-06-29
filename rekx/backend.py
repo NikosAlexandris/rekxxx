@@ -195,40 +195,129 @@ class NetCDF4Backend(RechunkingBackendBase):
         # logger.info(f"Completed rechunking from {input_filepath} to {output_filepath}")
 
 
+# class XarrayBackend(RechunkingBackendBase):
+    # def rechunk(self, *args, **kwargs):
+def rechunk_netcdf_via_xarray(
+    input_filepath: Path,
+    output_filepath: Path,
+    time: int,
+    latitude: int,
+    longitude: int,
+    mode: str = 'w-',
+    overwrite_output: bool = False,
+    encoding: dict = {},
+    unlimited_dimensions: list = ['time'],
+    compute: bool = True,
+    engine: str = "h5netcdf",
+) -> None:
+    """
+    Rechunk a NetCDF dataset and save it to a new file.
+
+    Parameters
+    ----------
+    input_filepath : Path
+        The path to the input NetCDF file.
+    output_filepath : Path
+        The path to the output NetCDF file where the rechunked dataset will be saved.
+    chunks : Dict[str, Union[int, None]]
+        A dictionary specifying the new chunk sizes for each dimension.
+        Use `None` for dimensions that should not be chunked.
+
+    Returns
+    -------
+    None
+        The function saves the rechunked dataset to `output_filepath`.
+
+    Examples
+    --------
+    # >>> rechunk_netcdf(Path("input.nc"), Path("output.nc"), {'time': 365, 'lat': 25, 'lon': 25})
+    """
+    # Open the dataset
+    import xarray as xr
+
+    dataset = xr.open_dataset(input_filepath)
+
+    # Reset legacy encoding
+    for variable in dataset.variables:
+        dataset[variable].encoding = {}  # Critical step!
+
+    # Define Zarr v3 encoding
+    encoding = {}
+
+    for variable in dataset.data_vars:
+        dimensions = dataset[variable].dims
+        chunk_sizes = []
+        for dimension in dimensions:
+            if dimension == "time":
+                if not time:
+                    time=dataset.sizes['time']
+                chunk_sizes.append(time)
+            elif dimension == "lat":
+                chunk_sizes.append(latitude)
+            elif dimension == "lon":
+                chunk_sizes.append(longitude)
+            else:
+                chunk_sizes.append(dataset.dims[dimension])
+        encoding[variable] = {"chunksizes": tuple(chunk_sizes)}
+
+    # print(f"Encoding for new Dataset : {encoding}")
+
+    # Write chunked data as a NetCDF file
+    if overwrite_output:
+        mode = "w"
+
+    dataset.to_netcdf(
+        path=output_filepath,
+        mode=mode,
+        engine=engine,
+        encoding=encoding,
+        unlimited_dims=unlimited_dimensions,
+        compute=compute,
+    )
+
+    return output_filepath
+
+
 class XarrayBackend(RechunkingBackendBase):
-    def rechunk_netcdf_via_xarray(
+    def rechunk(
+        self,
         input_filepath: Path,
+        variables: list[str],
         output_filepath: Path,
         time: int = None,
         latitude: int = None,
         longitude: int = None,
-    ) -> None:
+        fix_unlimited_dimensions: bool = False,
+        cache_size: int = CACHE_SIZE_DEFAULT,
+        cache_elements: int = CACHE_ELEMENTS_DEFAULT,
+        cache_preemption: float = CACHE_PREEMPTION_DEFAULT,
+        compression: str = COMPRESSION_FILTER_DEFAULT,
+        compression_level: int = COMPRESSION_LEVEL_DEFAULT,
+        shuffling: bool = SHUFFLING_DEFAULT,
+        memory: bool = RECHUNK_IN_MEMORY_DEFAULT,
+        mode: str = 'w-',
+        overwrite_output: bool = False,
+        engine: str = 'h5netcdf',
+        dry_run: bool = False,
+        **kwargs
+    ):
         """
-        Rechunk a NetCDF dataset and save it to a new file.
-
-        Parameters
-        ----------
-        input_filepath : Path
-            The path to the input NetCDF file.
-        output_filepath : Path
-            The path to the output NetCDF file where the rechunked dataset will be saved.
-        chunks : Dict[str, Union[int, None]]
-            A dictionary specifying the new chunk sizes for each dimension.
-            Use `None` for dimensions that should not be chunked.
-
-        Returns
-        -------
-        None
-            The function saves the rechunked dataset to `output_filepath`.
-
-        Examples
-        --------
-        # >>> rechunk_netcdf(Path("input.nc"), Path("output.nc"), {'time': 365, 'lat': 25, 'lon': 25})
         """
-        dataset = xr.open_dataset(input_filepath)
-        chunks = {"time": time, "lat": lat, "lon": lon}
-        dataset_rechunked = dataset.chunk(chunks)
-        dataset_rechunked.to_netcdf(output_filepath)
+        # if not output_filepath.exists():
+        #     output_filepath.parent.mkdir(parents=True, exist_ok=True)
+        if dry_run:
+            return f"Rechunking via Xarray\n   from {input_filepath}\n   to {output_filepath}\n   with chunks (time={time}, lat={latitude}, lon={longitude})"
+        else:
+            return rechunk_netcdf_via_xarray(
+                input_filepath=input_filepath,
+                output_filepath=output_filepath,
+                time=time,
+                latitude=latitude,
+                longitude=longitude,
+                mode=mode,
+                overwrite_output=overwrite_output,
+                engine=engine,
+            )
 
 
 @enum.unique
@@ -257,6 +346,3 @@ class RechunkingBackend(str, enum.Enum):
 
         else:
             raise ValueError(f"No known backend for {self.name}.")
-
-
-

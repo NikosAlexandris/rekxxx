@@ -411,7 +411,8 @@ def select_from_parquet(
     dataset = xr.open_dataset(
         str(parquet_store),  # does not handle Path
         engine="kerchunk",
-        storage_options=dict(skip_instance_cache=True, remote_protocol="file"),
+        # storage_options=dict(skip_instance_cache=True, remote_protocol="file"),
+        storage_options=dict(remote_protocol="file"),
         # backend_kwargs={"consolidated": False},
         # chunks=None,
         # mask_and_scale=mask_and_scale,

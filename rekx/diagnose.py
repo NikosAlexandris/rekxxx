@@ -76,7 +76,7 @@ def detect_chunking_shapes(
 
 def detect_chunking_shapes_parallel(
     file_paths: List[Path],
-    variable_set: XarrayVariableSet = XarrayVariableSet.all,
+    variable_set: list = [XarrayVariableSet.all],
 ) -> dict:
     """
     Detect and aggregate the chunking shapes of variables within a set of
@@ -96,8 +96,12 @@ def detect_chunking_shapes_parallel(
     """
     aggregated_chunking_shapes = {}
     with ProcessPoolExecutor() as executor:
+        # futures = [
+        #     executor.submit(detect_chunking_shapes, file_path, variable_set.value)
+        #     for file_path in file_paths
+        # ]
         futures = [
-            executor.submit(detect_chunking_shapes, file_path, variable_set.value)
+            executor.submit(detect_chunking_shapes, file_path, [variable_set])
             for file_path in file_paths
         ]
 

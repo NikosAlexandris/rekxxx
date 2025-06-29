@@ -7,26 +7,30 @@ from pathlib import Path
 import xarray as xr
 from xarray import Dataset
 import zarr
+# from zarr.codecs import BloscCodec
 from rich import print
 from dask.distributed import LocalCluster, Client
 from distributed import progress
-from zarr.storage import DirectoryStore
+from zarr.storage import LocalStore  # for Zarr 3
 from typing_extensions import Annotated, Optional, List
+
+from rekx.dask_configuration import auto_configure_for_large_dataset
 from .typer_parameters import (
-    typer_option_dry_run,
-    typer_argument_latitude_in_degrees,
-    typer_argument_longitude_in_degrees,
+    typer_argument_source_directory,
     typer_argument_time_series,
     typer_argument_variable,
-    typer_option_repetitions,
-    typer_option_tolerance,
+    typer_option_output_directory,
+    typer_option_filename_pattern,
     typer_option_verbose,
+    typer_option_dry_run,
+    typer_option_tolerance,
 )
 from .constants import VERBOSE_LEVEL_DEFAULT
+from .drop import drop_other_data_variables
 
 DASK_SCHEDULER_IP = 'localhost'
 DASK_SCHEDULER_PORT = '8888'
-DASK_COMPUTE = False
+DASK_COMPUTE = True
 NUMBER_OF_WORKERS = 36
 
 XARRAY_OPEN_DATA_COMBINE = "nested"
@@ -42,8 +46,7 @@ ZARR_COMPRESSOR_LEVEL = 1
 COMPRESSION_LEVEL_DEFAULT = ZARR_COMPRESSOR_LEVEL
 ZARR_COMPRESSOR_SHUFFLE = "shuffle"
 SHUFFLING_DEFAULT = ZARR_COMPRESSOR_SHUFFLE
-# ZARR_COMPRESSOR = zarr.codecs.BloscCodec(
-ZARR_COMPRESSOR = zarr.blosc.Blosc(
+ZARR_COMPRESSOR = zarr.codecs.BloscCodec(
     cname=ZARR_COMPRESSOR_CODEC,
     clevel=ZARR_COMPRESSOR_LEVEL,
     shuffle=ZARR_COMPRESSOR_SHUFFLE,
@@ -83,12 +86,12 @@ def apply_safe_chunking(dataset, main_variable, time_chunks, lat_chunks, lon_chu
             del dataset[var].encoding['compressor']
             
         # Apply safe chunking to auxiliary variables
-        if var in ['lat_bnds', 'lon_bnds']:
+        if var in ['lat', 'lon']:
             dataset[var] = dataset[var].chunk({
                 'time': time_chunks,
                 'lat': lat_chunks,
                 'lon': lon_chunks,
-                'bnds': 2  # Explicit chunk for bounds dimension
+                # 'bnds': 2  # Explicit chunk for bounds dimension
             })
     
     return dataset
@@ -172,6 +175,33 @@ def read_parquet_via_zarr(
         raise SystemExit(33)
 
 
+def read_large_parquet_optimized(parquet_store: Path, variable: str):
+    """Read large Parquet store with memory optimization."""
+    
+    # Use kerchunk engine for Parquet reading with streaming optimizations
+    open_options = {
+        "engine": "kerchunk",
+        "storage_options": {
+            "remote_protocol": "file",
+            # Disable caching for large files to save memory
+            "cache_size": 0,  
+        },
+        # Don't load everything into memory immediately
+        "chunks": None,  # Let Dask decide initial chunking
+    }
+    
+    print(f"Reading large Parquet store: {parquet_store}")
+    dataset = xr.open_dataset(
+            str(parquet_store),
+            **open_options,
+            )
+    
+    # Drop unnecessary variables early to save memory
+    dataset = drop_other_data_variables(dataset)
+    
+    return dataset
+
+
 def parse_compression_filters(compressing_filters: str) -> List[str]:
     if isinstance(compressing_filters, str):
         return compressing_filters.split(",")
@@ -181,69 +211,129 @@ def parse_compression_filters(compressing_filters: str) -> List[str]:
 
 def generate_zarr_store(
     dataset: Dataset,
-    store: str,
-    latitude_chunks: int,
-    longitude_chunks: int,
-    time_chunks: int = -1,
+    variable: str,
+    store: LocalStore, # for Zarr 3
+    # latitude_chunks: int,
+    # longitude_chunks: int,
+    # time_chunks: int = -1,
     compute: bool = DASK_COMPUTE,
     consolidate: bool = ZARR_CONSOLIDATE,
     compressor = ZARR_COMPRESSOR,
     mode: str = 'w-',
+    overwrite_output: bool = False,
 ):
     """
+    Notes
+    -----
+
+    Files produced by `ncks` or with legacy compression : often have .encoding
+    attributes referencing numcodecs codecs (e.g., numcodecs.shuffle.Shuffle),
+    which are not accepted by Zarr v3. In order to avoid encoding related
+    errors, we clear the legacy encoding from all variables before writing.
+
     """
-    print(f" {GREEN_DASH} Chunk the dataset")
-    dataset = dataset.chunk({"time": time_chunks, "lat": latitude_chunks, "lon": longitude_chunks})
-    print(f'   > Dataset shape after chunking : {dataset.data_vars}')
+    # Reset legacy encoding
+    for var in dataset.variables:
+        dataset[var].encoding = {}  # Critical step!
+   
+    # print(f" {GREEN_DASH} Chunk the dataset")
+    # dataset = dataset.chunk({"time": time_chunks, "lat": latitude_chunks, "lon": longitude_chunks})
+    # print(f'   > Dataset shape after chunking : {dataset.data_vars}')
 
     print(f"   Define the store path for the current chunking shape")
-    # store = LocalStore(store_path)
-    store = DirectoryStore(store)
+    store = LocalStore(store)  # for Zarr 3
 
-    print(f' {GREEN_DASH} Build the Dask task graph')
+    # Define Zarr v3 encoding
+    encoding = {
+        dataset[variable].name: {"compressors": (compressor,)},
+    }
+    for coordinate in dataset.coords:
+        encoding[coordinate] = {"compressors": (), "filters": ()}
+   
+    # Write to Zarr
+    if compute == False:
+        print(f' {GREEN_DASH} Build the Dask task graph')
+    print(f' {GREEN_DASH} Generate Zarr store')
+
+    if overwrite_output:
+        mode = "w"
+
     return dataset.to_zarr(
         store=store,
-        compute=False,
+        compute=compute,
         consolidated=consolidate,
-        encoding={
-            dataset.SIS.name: {"compressors": compressor},
-            "time": {"compressors": compressor},
-            "lat": {"compressors": compressor},
-            "lon": {"compressors": compressor},
-        },
+        encoding=encoding,
+        zarr_format=3,
         mode=mode,
-        safe_chunks=False,
+        # safe_chunks=False,
     )
 
 
+def generate_zarr_store_streaming(
+    dataset,
+    variable: str,
+    store: str,
+    compute: bool = True,
+    consolidate: bool = True,
+    compressor = ZARR_COMPRESSOR,
+    zarr_format: int = 3
+):
+    """
+    Generate Zarr store with v3 optimizations and streaming approach.
+    """
+    from zarr.storage import LocalStore
+    
+    # Clean up encoding for Zarr v3 compatibility
+    # dataset = clean_encoding_for_zarr_v3(dataset)
+    for var in dataset.variables:
+        dataset[var].encoding = {}  # Critical step!
+    
+    # Use LocalStore for Zarr v3
+    store_obj = LocalStore(store)
+    
+    # Define Zarr v3 encoding
+    # encoding = configure_zarr_v3_encoding(dataset, variable, compressor)
+    encoding = {
+        dataset[variable].name: {"compressors": (compressor,)},
+    }
+    for coordinate in dataset.coords:
+        encoding[coordinate] = {"compressors": (), "filters": ()}
+    
+    # Stream the conversion to avoid memory buildup
+    if compute:
+        print("Starting streaming conversion to Zarr...")
+        result = dataset.to_zarr(
+            store=store_obj,
+            mode='w',
+            compute=True,
+            consolidated=consolidate,
+            encoding=encoding,
+            zarr_format=zarr_format
+        )
+        
+        if consolidate:
+            # Zarr v3 consolidated metadata provides significant performance boost
+            print("Consolidating metadata...")
+            zarr.consolidate_metadata(store_obj)
+        
+        return result
+    else:
+        # Return delayed computation for manual scheduling
+        return dataset.to_zarr(
+            store=store_obj,
+            mode='w',
+            compute=False,
+            consolidated=consolidate,
+            encoding=encoding,
+            zarr_format=zarr_format
+        )
+
+
 def convert_parquet_to_zarr_store(
-    time_series: Annotated[Path, typer_argument_time_series],
+    parquet_store: Annotated[Path, typer_argument_time_series],
     zarr_store: Annotated[Path, typer.Argument(help='Local Zarr store')],
     variable: Annotated[str, typer_argument_variable],
-    # longitude: Annotated[float, typer_argument_longitude_in_degrees],
-    # latitude: Annotated[float, typer_argument_latitude_in_degrees],
-    # window: Annotated[int, typer_option_spatial_window_in_degrees] = None,
-    time: Annotated[
-        int | None,
-        typer.Option(
-            help="New chunk size for the `time` dimension.",
-        ),
-    ],
-    latitude: Annotated[
-        int | None,
-        typer.Option(
-            help="New chunk size for the `lat` dimension.",
-        ),
-    ],
-    longitude: Annotated[
-        int | None,
-        typer.Option(
-            help="New chunk size for the `lon` dimension.",
-        ),
-    ],
-    # tolerance: Annotated[
-    #     Optional[float], typer_option_tolerance
-    # ] = DATASET_SELECT_TOLERANCE_DEFAULT,
+    drop_other_variables: bool = True,
     compression: Annotated[
         str, typer.Option(help="Compression filter")
     ] = COMPRESSION_FILTER_DEFAULT,
@@ -255,88 +345,79 @@ def convert_parquet_to_zarr_store(
     dask_scheduler: Annotated[
         str, typer.Option(help="The port:ip of the dask scheduler")
     ] = None,
-    workers: Annotated[int, typer.Option(help="Number of worker processes.")] = 4,
-    memory_limit: Annotated[int, typer.Option(help="Memory limit for the Dask cluster in GB")] = 222,
+    workers: Annotated[int, typer.Option(help="Number of workers")] = None,
+    threads_per_worker: Annotated[int, typer.Option(help="Threads per worker")] = 2,
+    memory_limit: Annotated[int, typer.Option(help="Memory limit for the Dask cluster in GB. [yellow bold]Will override [code]auto-memory[/code][/yellow bold]")] = None,
+    auto_memory_limit: Annotated[bool, typer.Option(help="Memory limit per worker")] = True,
+    consolidate: Annotated[bool, typer.Option(help="Consolidate Zarr store metadata. [black on yellow] Not part in Zarr 3 [/black on yellow]")]= ZARR_CONSOLIDATE,
+    compute: Annotated[bool, typer.Option(help="Compute immediately [code]True[/code] or build a Dask task graph [code]False[code]")] = DASK_COMPUTE,
+    mode: Annotated[ str, typer.Option(help="Writing file mode")] = 'w-',
+    overwrite_output: Annotated[bool, typer.Option(help="Overwrite existing output file")] = False,
     dry_run: Annotated[bool, typer_option_dry_run] = False,
     verbose: Annotated[int, typer_option_verbose] = VERBOSE_LEVEL_DEFAULT,
 ):
     """
+    Convert a single large Parquet store to Zarr efficiently.
+
     1. Read Parquet index via the Zarr engine
     2. Rechunk. Again.
     3. Generate Zarr store
     4. Time speed of reading complete time series over a single geographic location
+
     """
-    # Read Parquet Index
+    if not memory_limit:
+        memory_limit = auto_memory_limit
 
-    dataset = read_parquet_via_zarr(
-        time_series=time_series,
-        variable=variable,
-        # longitude=longitude,
-        # latitude=latitude,
-        # tolerance=tolerance,
+    if dry_run:
+        config = auto_configure_for_large_dataset(
+            memory_limit=memory_limit,
+            workers=workers,
+            threads_per_worker=threads_per_worker,
+        )
+        print(f"Would use Dask configuration: {config}")
+        print(f"Input: {parquet_store}")
+        print(f"Output: {zarr_store}")
+        return
+    
+    # Ensure output directory exists
+    if not zarr_store:
+        zarr_store = Path(f"{parquet_store.stem}.zarr")
+        # zarr_store.parent.mkdir(parents=True, exist_ok=True)
+    
+   # Auto-configure Dask for single large file processing
+    dask_config = auto_configure_for_large_dataset(
+        memory_limit=memory_limit,
+        workers=workers,
+        threads_per_worker=threads_per_worker
     )
     
-    # Remove bounds variables if present
-    drop_vars = [v for v in ['lat_bnds', 'lon_bnds'] if v in dataset.variables]
-    if drop_vars:
-        dataset = dataset.drop_vars(drop_vars)
+    with LocalCluster(**dask_config) as cluster, Client(cluster) as client:
+        print(f"Dashboard: {client.dashboard_link}")
 
-    # Remove the 'bnds' dimension if now unused
-    if 'bnds' in dataset.dims and all('bnds' not in var.dims for var in dataset.variables):
-        dataset = dataset.drop_dims('bnds')
-
-   # Remove 'bounds' attributes from lat/lon coordinates
-    for coord in ['lat', 'lon']:
-        if coord in dataset.coords and 'bounds' in dataset[coord].attrs:
-            del dataset[coord].attrs['bounds']
-
-    print(f"{dataset=}")
-
-
-    # In your conversion function:
-    dataset = apply_safe_chunking(
-        dataset,
-        main_variable=variable,
-        time_chunks=time,
-        lat_chunks=latitude,
-        lon_chunks=longitude
-    )
-
-    # # Before generating Zarr store
-    # for var in dataset.variables:
-    #     if var != variable:  # main_variable='SIS'
-    #         # Clear conflicting encoding for non-primary variables
-    #         dataset[var].encoding.pop('chunks', None)
-    #         dataset[var].encoding.pop('compressor', None)
-
-    # # Rechunk
-    # dataset = dataset.chunk({'time': time, 'lat': latitude, 'lon': longitude})
-
-    # Generate Zarr store -- Build the Dask task graph
+        # Read Parquet Index
+        dataset = read_parquet_via_zarr(
+        # dataset = read_large_parquet_optimized(
+                # time_series=parquet_store,
+                parquet_store,
+                variable=variable,
+        )
+        # Drop "other" data variables ?
+        if drop_other_variables:
+            dataset = drop_other_data_variables(dataset)
     
-    future = generate_zarr_store(
-        dataset=dataset,
-        store=str(zarr_store),
-        time_chunks=time,
-        latitude_chunks=latitude,
-        longitude_chunks=longitude,
-        compute=False,
-        consolidate=ZARR_CONSOLIDATE,
-        compressor=ZARR_COMPRESSOR,
-        mode='w-',
-    )
-
-    # Launch a Dask Cluster ?
-
-    # with LocalCluster(
-    #     host=DASK_SCHEDULER_IP,
-    #     scheduler_port=DASK_SCHEDULER_PORT,
-    #     n_workers=workers,
-    #     memory_limit=f"{memory_limit}G",
-    # ) as cluster:
-    #     print(f"   {GREEN_DASH} Connect to local cluster")
-        # with Client(cluster) as client:
-    with Client(dask_scheduler, n_workers=workers, memory_limit=memory_limit) as client:  # noqa
-        print(f'{client=}')
-        future = future.persist()
-        progress(future)
+        compressor = zarr.codecs.BloscCodec(
+            cname=compression,
+            clevel=compression_level,
+            shuffle=shuffling,
+        )
+        # Generate Zarr store with streaming approach
+        generate_zarr_store_streaming(
+            dataset=dataset,
+            variable=variable,
+            store=str(zarr_store),
+            compute=compute,
+            consolidate=consolidate,
+            compressor=compressor,
+            # mode=mode,
+            # overwrite_output=overwrite_output,
+        )

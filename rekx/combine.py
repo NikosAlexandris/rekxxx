@@ -157,6 +157,6 @@ def combine_kerchunk_references_to_parquet(
             filesystem.get_mapper(""),
             engine="zarr",
             chunks={},
-            backend_kwargs={"consolidated": False},
+            # backend_kwargs={"consolidated": False},
         )
         print(ds)

@@ -34,7 +34,7 @@ class XarrayVariableSet(str, enum.Enum):
 
 def select_xarray_variable_set_from_dataset(
     xarray_variable_set: Type[enum.Enum],
-    variable_set: List[enum.Enum],
+    variable_set: list[enum.Enum],
     dataset: xr.Dataset,
 ):
     """
@@ -98,11 +98,32 @@ def select_xarray_variable_set_from_dataset(
     }
     selected_variables = set()
 
-    for variable in xarray_variable_set:
-        if variable in variable_set:
-            selected_variables.update(selection_map[variable])
+    # Convert any strings to enum members (case-insensitive)
+    enum_set = set()
+    for v in variable_set:
+        if isinstance(v, XarrayVariableSet):
+            enum_set.add(v)
+        elif isinstance(v, str):
+            # Case-insensitive match
+            try:
+                enum_set.add(XarrayVariableSet(v.lower()))
+            except ValueError:
+                raise ValueError(f"Unknown variable set: {v!r}")
+        else:
+            raise TypeError(f"Invalid type for variable set: {type(v)}")
 
-    return selected_variables
+    for enum_member in enum_set:
+        selected_variables.update(selection_map.get(enum_member, set()))
+
+    # Only return variables present in the dataset
+    return selected_variables & set(dataset.variables)
+
+
+    # for variable in xarray_variable_set:
+    #     if variable in variable_set:
+    #         selected_variables.update(selection_map[variable])
+
+    # return selected_variables
 
 
 def select_netcdf_variable_set_from_dataset(
@@ -170,7 +191,7 @@ class FileFormat(enum.Enum):
             return {
                 "engine": "kerchunk",
                 "storage_options": {
-                    "skip_instance_cache": True,
+                    # "skip_instance_cache": True,
                     "remote_protocol": "file",
                 },
             }

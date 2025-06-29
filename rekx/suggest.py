@@ -1,3 +1,4 @@
+from xarray import Dataset
 import math
 from typing import Annotated, List
 
@@ -160,6 +161,42 @@ def find_nearest_divisor(n, divisors):
         divisors, key=lambda x: abs(x - n) if n % x == 0 else float("inf")
     )
     return nearest_divisor if n % nearest_divisor == 0 else n
+
+
+def suggest_chunking_shape_alternative_xarray(
+    dataset: Dataset,
+    variable: str,
+):
+    """
+    Apply optimal chunking strategy for Zarr conversion.
+    
+    Based on Zarr performance best practices and access patterns.
+    """
+    # Zarr performs best with chunks ≥1MB uncompressed
+    target_chunk_size = 1024 * 1024 * 4  # 4MB target chunks
+    
+    # Get optimal chunk shape for time series data
+    time_size, lat_size, lon_size = dataset.dims['time'], dataset.dims['lat'], dataset.dims['lon']
+    dtype_size = dataset[variable].dtype.itemsize
+    
+    # Calculate optimal chunks for time series access patterns
+    # Favor larger time chunks for time series queries
+    optimal_time_chunk = min(time_size, target_chunk_size // (lat_size * lon_size * dtype_size))
+    optimal_time_chunk = max(optimal_time_chunk, 1)
+    
+    # For spatial dimensions, balance between file count and access efficiency
+    spatial_chunk_size = int((target_chunk_size / (optimal_time_chunk * dtype_size)) ** 0.5)
+    optimal_lat_chunk = min(lat_size, max(spatial_chunk_size, 64))
+    optimal_lon_chunk = min(lon_size, max(spatial_chunk_size, 64))
+    
+    chunks = {
+        'time': optimal_time_chunk,
+        'lat': optimal_lat_chunk, 
+        'lon': optimal_lon_chunk
+    }
+    
+    print(f"Applying optimal chunks: {chunks}")
+    return dataset.chunk(chunks)
 
 
 def determine_chunking_shape_alternative(

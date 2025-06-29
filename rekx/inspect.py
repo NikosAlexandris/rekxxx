@@ -150,3 +150,42 @@ def inspect_netcdf_data(
                 metadata_series=metadata_series,
                 group_metadata=group_metadata,
             )
+
+
+def inspect_xarray_dataset(
+    input_path: Annotated[Path, typer_argument_source_path] = ".",
+    variable: str = None,
+    variable_set: Annotated[
+        XarrayVariableSet, typer.Option(help="Set of Xarray variables to diagnose")
+    ] = XarrayVariableSet.all,
+    long_table: Annotated[
+        Optional[bool],
+        "Group rows of metadata per input NetCDF file and variable in a long table",
+    ] = True,
+    group_metadata: Annotated[
+        Optional[bool],
+        "Visually cluster rows of metadata per input NetCDF file and variable",
+    ] = False,
+    longitude: Annotated[float, typer_argument_longitude_in_degrees] = 8,
+    latitude: Annotated[float, typer_argument_latitude_in_degrees] = 45,
+    repetitions: Annotated[int, typer_option_repetitions] = REPETITIONS_DEFAULT,
+    humanize: Annotated[bool, typer_option_humanize] = False,
+    csv: Annotated[Path, typer_option_csv] = None,
+    verbose: Annotated[int, typer_option_verbose] = VERBOSE_LEVEL_DEFAULT,
+) -> None:
+    """
+    Inspect Xarray-supported data
+
+    """
+    # Open without chunks parameter to avoid Dask auto-chunking
+    import xarray as xr
+    dataset = xr.open_dataset(
+        str(input_path),
+        chunks=None,  # Disable Dask
+        consolidated=True
+    )
+    
+    for var in dataset.data_vars:
+        print(f"Variable {var}:")
+        print(f"  Encoding chunks: {dataset[var].encoding.get('chunks', 'Not specified')}")
+        print(f"  Data type: {type(dataset[var].data)}")  # Should be numpy, not dask
