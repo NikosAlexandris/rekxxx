@@ -3,6 +3,8 @@ from typing import Annotated, Dict, List, Optional, Tuple
 
 import typer
 
+from rekx.convert import ZARR_CONSOLIDATE
+
 from .constants import REPETITIONS_DEFAULT, VERBOSE_LEVEL_DEFAULT
 from .csv import write_metadata_dictionary_to_csv, write_nested_dictionary_to_csv
 from .models import XarrayVariableSet
@@ -158,6 +160,7 @@ def inspect_xarray_dataset(
     variable_set: Annotated[
         XarrayVariableSet, typer.Option(help="Set of Xarray variables to diagnose")
     ] = XarrayVariableSet.all,
+    consolidated: Annotated[bool, typer.Option(help="Zarr v2 compatibility option for consolidated Zarr stores. [black on yellow] Not part in Zarr 3 [/black on yellow]")] = False,
     long_table: Annotated[
         Optional[bool],
         "Group rows of metadata per input NetCDF file and variable in a long table",
@@ -177,12 +180,11 @@ def inspect_xarray_dataset(
     Inspect Xarray-supported data
 
     """
-    # Open without chunks parameter to avoid Dask auto-chunking
     import xarray as xr
     dataset = xr.open_dataset(
         str(input_path),
-        chunks=None,  # Disable Dask
-        consolidated=True
+        chunks=None,  # Open without chunks parameter to avoid Dask auto-chunking
+        consolidated=consolidated,
     )
     
     for var in dataset.data_vars:

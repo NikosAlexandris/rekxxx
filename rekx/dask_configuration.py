@@ -1,8 +1,7 @@
-from xarray import Dataset
-
-
 def configure_dask(
-    n_workers: int | None, threads_per_worker: int | None, memory_limit: str | None
+    n_workers: int | None,
+    threads_per_worker: int | None,
+    memory_limit: str | None,
 ):
     """
     """
@@ -52,7 +51,15 @@ def auto_configure_for_large_dataset(
         workers = min(8, cpu_count // 2)  # Conservative worker count
     
     memory_per_worker = available_memory // workers
-    
+
+    # Memory management parameters
+    import dask.config
+    dask.config.set({
+        'distributed.worker.memory.target': 0.75,  # Set target memory fraction
+        'distributed.worker.memory.spill': 0.85,    # Set spill memory fraction
+        'distributed.worker.memory.pause': 0.9,
+    })
+
     # Pass memory configuration parameters directly, not in worker_options
     return {
         'n_workers': workers,
@@ -60,8 +67,4 @@ def auto_configure_for_large_dataset(
         'memory_limit': f"{memory_per_worker // (1024**3)}GB",
         'processes': True,
         'dashboard_address': ':8787',
-        # Memory management parameters passed directly
-        'memory_target_fraction': 0.75,
-        'memory_spill_fraction': 0.85,
-        'memory_pause_fraction': 0.90,
     }
