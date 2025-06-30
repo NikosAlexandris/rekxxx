@@ -10,17 +10,13 @@ import zarr
 # from zarr.codecs import BloscCodec
 from rich import print
 from dask.distributed import LocalCluster, Client
-from distributed import progress
 from zarr.storage import LocalStore  # for Zarr 3
 from typing_extensions import Annotated, Optional, List
 
 from rekx.dask_configuration import auto_configure_for_large_dataset
 from .typer_parameters import (
-    typer_argument_source_directory,
     typer_argument_time_series,
     typer_argument_variable,
-    typer_option_output_directory,
-    typer_option_filename_pattern,
     typer_option_verbose,
     typer_option_dry_run,
     typer_option_tolerance,
@@ -28,18 +24,9 @@ from .typer_parameters import (
 from .constants import VERBOSE_LEVEL_DEFAULT
 from .drop import drop_other_data_variables
 
-DASK_SCHEDULER_IP = 'localhost'
-DASK_SCHEDULER_PORT = '8888'
 DASK_COMPUTE = True
-NUMBER_OF_WORKERS = 36
-
-XARRAY_OPEN_DATA_COMBINE = "nested"
-XARRAY_OPEN_DATA_CONCATENATE_DIMENSION = "time"
-XARRAY_OPEN_DATA_ENGINE = "h5netcdf"
-XARRAY_OPEN_DATA_IN_PARALLEL = True
-
 ZARR_STORE_BASE_PATH = Path("sis_italia")
-ZARR_CONSOLIDATE = True
+ZARR_CONSOLIDATE_DEFAULT = False
 ZARR_COMPRESSOR_CODEC = "zstd"
 COMPRESSION_FILTER_DEFAULT = ZARR_COMPRESSOR_CODEC
 ZARR_COMPRESSOR_LEVEL = 1
@@ -51,24 +38,7 @@ ZARR_COMPRESSOR = zarr.codecs.BloscCodec(
     clevel=ZARR_COMPRESSOR_LEVEL,
     shuffle=ZARR_COMPRESSOR_SHUFFLE,
 )
-
-NETCDF_FILENAME_PREFIX = 'SISin*'
-NETCDF_COMPRESSOR_CODEC = 'zlib'
-NETCDF_COMPRESSOR_LEVEL = 0
-NETCDF_FILENAME_SUFFIX = f"{NETCDF_COMPRESSOR_CODEC}_{NETCDF_COMPRESSOR_LEVEL}"
-NETCDF_FILENAME_EXTENSION = 'nc'
-
 DATASET_SELECT_TOLERANCE_DEFAULT = 0.1
-
-CHUNKING_SHAPES = [
-    #(48, 2, 2),
-    #(48, 4, 4),
-    #(48, 8, 8),
-    #(48, 16, 16),
-    #(48, 32, 32),
-    (48, 64, 64),
-    (48, 128, 128)
-]
 GREEN_DASH = f"[green]-[/green]"
 
 
@@ -217,7 +187,7 @@ def generate_zarr_store(
     # longitude_chunks: int,
     # time_chunks: int = -1,
     compute: bool = DASK_COMPUTE,
-    consolidate: bool = ZARR_CONSOLIDATE,
+    consolidate: bool = ZARR_CONSOLIDATE_DEFAULT,
     compressor = ZARR_COMPRESSOR,
     mode: str = 'w-',
     overwrite_output: bool = False,
@@ -349,7 +319,7 @@ def convert_parquet_to_zarr_store(
     threads_per_worker: Annotated[int, typer.Option(help="Threads per worker")] = 2,
     memory_limit: Annotated[int, typer.Option(help="Memory limit for the Dask cluster in GB. [yellow bold]Will override [code]auto-memory[/code][/yellow bold]")] = None,
     auto_memory_limit: Annotated[bool, typer.Option(help="Memory limit per worker")] = True,
-    consolidate: Annotated[bool, typer.Option(help="Consolidate Zarr store metadata. [black on yellow] Not part in Zarr 3 [/black on yellow]")]= ZARR_CONSOLIDATE,
+    consolidate: Annotated[bool, typer.Option(help="Consolidate Zarr store metadata. [black on yellow] Not part in Zarr 3 [/black on yellow]")]= ZARR_CONSOLIDATE_DEFAULT,
     compute: Annotated[bool, typer.Option(help="Compute immediately [code]True[/code] or build a Dask task graph [code]False[code]")] = DASK_COMPUTE,
     mode: Annotated[ str, typer.Option(help="Writing file mode")] = 'w-',
     overwrite_output: Annotated[bool, typer.Option(help="Overwrite existing output file")] = False,
