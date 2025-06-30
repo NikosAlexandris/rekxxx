@@ -238,8 +238,7 @@ def rechunk_netcdf_via_xarray(
     dataset = xr.open_dataset(input_filepath)
 
     # Reset legacy encoding
-    for variable in dataset.variables:
-        dataset[variable].encoding = {}  # Critical step!
+    dataset.drop_encoding()
 
     # Define Zarr v3 encoding
     encoding = {}

@@ -242,6 +242,7 @@ def generate_zarr_store(
 def generate_zarr_store_streaming(
     dataset,
     variable: str,
+    data_type: str,
     store: str,
     compute: bool = True,
     consolidate: bool = True,
@@ -254,21 +255,66 @@ def generate_zarr_store_streaming(
     from zarr.storage import LocalStore
     
     # Clean up encoding for Zarr v3 compatibility
-    # dataset = clean_encoding_for_zarr_v3(dataset)
-    for var in dataset.variables:
-        dataset[var].encoding = {}  # Critical step!
+    dataset.drop_encoding()
     
-    # Use LocalStore for Zarr v3
+    # LocalStore for Zarr v3
     store_obj = LocalStore(store)
+
+    # Determine the full size of the time dimension
+    time_size = dataset.sizes['time']
     
-    # Define Zarr v3 encoding
-    # encoding = configure_zarr_v3_encoding(dataset, variable, compressor)
-    encoding = {
-        dataset[variable].name: {"compressors": (compressor,)},
-    }
-    for coordinate in dataset.coords:
-        encoding[coordinate] = {"compressors": (), "filters": ()}
-    
+    # Define encoding: time is contiguous, others retain their chunking
+    encoding = {}
+    for variable in dataset.data_vars:
+        dimensions = dataset[variable].dims
+        # dtype = dataset[variable].dtype
+        chunks = {}
+
+        # if mask_and_scale:
+        #     fill_value = dataset[variable].encoding['_FillValue']
+        # else:
+        #     fill_value = None
+
+        for dimension in dimensions:
+        # for i, dimension in enumerate(dimensions):
+
+            # Replace time chunk with full length
+            if dimension == "time":
+                # if not time:
+                chunks.update(time=time_size)
+            # elif dimension == "lat":
+            #     chunks.update(lat=latitude)
+
+            # elif dimension == "lon":
+            #     chunks.update(lon=longitude)
+
+            # else:
+            #     chunks.append(dataset.sizes[dimension])
+            # else:
+                # Use existing chunking or default to full dimension if not chunked
+                # chunks.update(chunks[i] if chunks[i] is not None else dataset.dims[dim])
+
+        # Define (Zarr v3) encoding
+        encoding = {
+            dataset[variable].name: {
+                "chunks": chunks,
+                "compressors": (compressor,),
+                "filters": (),
+                # "shards": None,
+                # '_FillValue': fill_value,
+                # "dtype": data_type,
+                },
+        }
+
+    # for coordinate in dataset.coords:
+    #     encoding[coordinate] = {"compressors": (), "filters": ()}
+
+    # Optionally clear coordinate encodings for Zarr v3 compatibility
+    for coord in dataset.coords:
+        encoding[coord] = {"compressors": (), "filters": ()}
+
+    # Now pass this encoding to .to_zarr()
+
     # Stream the conversion to avoid memory buildup
     if compute:
         print("Starting streaming conversion to Zarr...")
@@ -287,6 +333,7 @@ def generate_zarr_store_streaming(
             zarr.consolidate_metadata(store_obj)
         
         return result
+
     else:
         # Return delayed computation for manual scheduling
         return dataset.to_zarr(
@@ -303,6 +350,7 @@ def convert_parquet_to_zarr_store(
     parquet_store: Annotated[Path, typer_argument_time_series],
     zarr_store: Annotated[Path, typer.Argument(help='Local Zarr store')],
     variable: Annotated[str, typer_argument_variable],
+    data_type: Annotated[str, typer.Option(help="Data type")] = 'float32',
     drop_other_variables: bool = True,
     compression: Annotated[
         str, typer.Option(help="Compression filter")
@@ -385,6 +433,7 @@ def convert_parquet_to_zarr_store(
         generate_zarr_store_streaming(
             dataset=dataset,
             variable=variable,
+            data_type=data_type,
             store=str(zarr_store),
             compute=compute,
             consolidate=consolidate,
