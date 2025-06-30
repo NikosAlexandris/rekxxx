@@ -1,3 +1,5 @@
+from rekx.constants import VERBOSE_LEVEL_DEFAULT
+
 def configure_dask(
     n_workers: int | None,
     threads_per_worker: int | None,
@@ -26,13 +28,15 @@ def configure_dask(
         memory_limit=memory_limit,
         processes=True,
         dashboard_address=":8787",
+        verbose=verbose,
     )
 
 
 def auto_configure_for_large_dataset(
     memory_limit: float| str = "auto", 
     workers: int | None = None,
-    threads_per_worker: int = 2
+    threads_per_worker: int = 2,
+    verbose: int = VERBOSE_LEVEL_DEFAULT,
 ):
     """Configure Dask optimally for single large dataset processing."""
     import psutil
@@ -61,10 +65,16 @@ def auto_configure_for_large_dataset(
     })
 
     # Pass memory configuration parameters directly, not in worker_options
-    return {
+    dask_configuration = {
         'n_workers': workers,
         'threads_per_worker': threads_per_worker,
         'memory_limit': f"{memory_per_worker // (1024**3)}GB",
         'processes': True,
         'dashboard_address': ':8787',
     }
+    if verbose:
+        from rich import print
+        print(f"{dask_configuration}")
+        print(dask.config.get("distributed.worker"))
+
+    return dask_configuration

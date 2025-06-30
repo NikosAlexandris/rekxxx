@@ -388,7 +388,8 @@ def convert_parquet_to_zarr_store(
     dask_config = auto_configure_for_large_dataset(
         memory_limit=memory_limit,
         workers=workers,
-        threads_per_worker=threads_per_worker
+        threads_per_worker=threads_per_worker,
+        verbose=verbose,
     )
     
     with LocalCluster(**dask_config) as cluster, Client(cluster) as client:
